@@ -1,9 +1,13 @@
+# server.py
 import socket
 import struct
 import threading
 import time
-import signal
-import sys
+from datetime import datetime
+from colorama import Fore, Style, init
+
+# Initialize colorama for styled output
+init(autoreset=True)
 
 # Configuration
 BROADCAST_PORT = 13117
@@ -12,7 +16,11 @@ MESSAGE_TYPE = 0x2
 UDP_SERVER_PORT = 2025
 TCP_SERVER_PORT = 2026
 
-running = True  # Global flag to control the server's loop
+running = True
+
+# Logging function with timestamps
+def log(message, color=Fore.RESET):
+    print(color + f"[{datetime.now().strftime('%H:%M:%S')}] {message}" + Style.RESET_ALL)
 
 def broadcast_offers():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as broadcast_socket:
@@ -29,26 +37,72 @@ def broadcast_offers():
         
         while running:
             broadcast_socket.sendto(message, ('<broadcast>', BROADCAST_PORT))
-            print("Offer broadcast sent.")
-            time.sleep(1)  # Broadcast every second
+            log("Offer broadcast sent.", Fore.CYAN)
+            time.sleep(1)
+
+def handle_udp_client(client_address, file_size):
+    try:
+        log(f"Starting UDP transfer to {client_address}", Fore.YELLOW)
+
+        # Prepare the data to send
+        total_segments = (file_size + 1023) // 1024
+        sequence_number = 0
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
+            while sequence_number < total_segments:
+                payload = b'0' * 1024
+                message = struct.pack(
+                    '!IBQQ',
+                    MAGIC_COOKIE,
+                    0x4,
+                    total_segments,
+                    sequence_number
+                ) + payload
+
+                udp_socket.sendto(message, client_address)
+                sequence_number += 1
+                time.sleep(0.001)  # Add delay to prevent congestion
+
+        log(f"UDP transfer to {client_address} completed.", Fore.GREEN)
+    except Exception as e:
+        log(f"Error handling UDP client {client_address}: {e}", Fore.RED)
+
+def start_udp_server():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_server:
+        udp_server.bind(('', UDP_SERVER_PORT))
+        udp_server.settimeout(1)
+        log(f"UDP server listening on port {UDP_SERVER_PORT}", Fore.CYAN)
+
+        while running:
+            try:
+                message, client_address = udp_server.recvfrom(1024)
+                magic_cookie, message_type, file_size = struct.unpack('!IBQ', message)
+                if magic_cookie != MAGIC_COOKIE or message_type != 0x3:
+                    log("Invalid UDP request received.", Fore.RED)
+                    continue
+
+                log(f"Received UDP request from {client_address} for {file_size} bytes.", Fore.GREEN)
+                threading.Thread(target=handle_udp_client, args=(client_address, file_size), daemon=True).start()
+            except socket.timeout:
+                continue
+            except Exception as e:
+                log(f"Error in UDP server: {e}", Fore.RED)
 
 def handle_tcp_client(client_socket, client_address):
     try:
-        print(f"TCP connection established with {client_address}")
-        # Read file size request from the client
+        log(f"TCP connection established with {client_address}", Fore.YELLOW)
         request = client_socket.recv(1024).decode().strip()
         if request.isdigit():
             file_size = int(request)
-            print(f"Client requested {file_size} bytes")
+            log(f"Client requested {file_size} bytes", Fore.GREEN)
 
-            # Send the requested amount of data
-            data = b'0' * file_size  # Example data (all zeros)
+            data = b'0' * file_size
             client_socket.sendall(data)
-            print(f"Sent {file_size} bytes to {client_address}")
+            log(f"Sent {file_size} bytes to {client_address}", Fore.GREEN)
         else:
-            print("Invalid request received.")
+            log("Invalid TCP request received.", Fore.RED)
     except Exception as e:
-        print(f"Error handling TCP client {client_address}: {e}")
+        log(f"Error handling TCP client {client_address}: {e}", Fore.RED)
     finally:
         client_socket.close()
 
@@ -56,95 +110,38 @@ def start_tcp_server():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_server:
         tcp_server.bind(('', TCP_SERVER_PORT))
         tcp_server.listen(5)
-        tcp_server.settimeout(1)  # Set a timeout of 1 second for the accept() call
-        print(f"TCP server listening on port {TCP_SERVER_PORT}")
+        log(f"TCP server listening on port {TCP_SERVER_PORT}", Fore.CYAN)
 
         while running:
             try:
                 client_socket, client_address = tcp_server.accept()
                 threading.Thread(target=handle_tcp_client, args=(client_socket, client_address), daemon=True).start()
             except socket.timeout:
-                continue  # Retry the loop on timeout
+                continue
+            except Exception as e:
+                log(f"Error in TCP server: {e}", Fore.RED)
 
 def signal_handler(sig, frame):
     global running
-    print("\nShutting down the server...")
+    log("Shutting down the server...", Fore.RED)
     running = False
 
-def handle_udp_client(client_address, file_size):
-    try:
-        print(f"Starting UDP transfer to {client_address}")
-
-        # Prepare the data to send
-        total_segments = (file_size + 1023) // 1024  # Number of 1KB segments
-        sequence_number = 0
-
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
-            while sequence_number < total_segments:
-                # Prepare payload
-                payload = b'0' * 1024  # 1KB of data
-
-                # Build the packet
-                message = struct.pack(
-                    '!IBQQ',
-                    MAGIC_COOKIE,
-                    0x4,  # Message type for payload
-                    total_segments,
-                    sequence_number
-                ) + payload
-
-                # Send the packet
-                udp_socket.sendto(message, client_address)
-                sequence_number += 1
-
-            print(f"UDP transfer to {client_address} completed.")
-    except Exception as e:
-        print(f"Error handling UDP client {client_address}: {e}")
-
-def start_udp_server():
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_server:
-        udp_server.bind(('', UDP_SERVER_PORT))
-        udp_server.settimeout(1)  # To allow periodic checking of the 'running' flag
-        print(f"UDP server listening on port {UDP_SERVER_PORT}")
-
-        while running:
-            try:
-                message, client_address = udp_server.recvfrom(1024)
-                # Validate and parse the request
-                magic_cookie, message_type, file_size = struct.unpack('!IBQ', message)
-                if magic_cookie != MAGIC_COOKIE or message_type != 0x3:
-                    print("Invalid UDP request received.")
-                    continue
-
-                print(f"Received UDP request from {client_address} for {file_size} bytes.")
-                # Start a new thread to handle the UDP client
-                threading.Thread(target=handle_udp_client, args=(client_address, file_size), daemon=True).start()
-            except socket.timeout:
-                continue  # Loop again to check if 'running' is still True
-            except Exception as e:
-                print(f"Error in UDP server: {e}")
-
-# ... (Signal handler and main remain the same)
-
 if __name__ == "__main__":
-    # Register signal handler for Ctrl+C
+    import signal
     signal.signal(signal.SIGINT, signal_handler)
 
-    print("Server starting...")
+    log("Server starting...", Fore.GREEN)
 
-    # Start broadcasting thread
     broadcast_thread = threading.Thread(target=broadcast_offers, daemon=True)
     broadcast_thread.start()
 
-    # Start TCP and UDP servers in separate threads
     tcp_thread = threading.Thread(target=start_tcp_server, daemon=True)
     tcp_thread.start()
 
     udp_thread = threading.Thread(target=start_udp_server, daemon=True)
     udp_thread.start()
 
-    # Keep the main thread alive
     while running:
         time.sleep(1)
 
-    print("Server shut down.")
+    log("Server shut down.", Fore.RED)
