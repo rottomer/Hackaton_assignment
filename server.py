@@ -36,7 +36,7 @@ def broadcast_offers():
         )
         
         while running:
-            broadcast_socket.sendto(message, ('<broadcast>', BROADCAST_PORT))
+            broadcast_socket.sendto(message, ('255.255.255.255', BROADCAST_PORT))
             log("Offer broadcast sent.", Fore.CYAN)
             time.sleep(1)
 
@@ -61,7 +61,7 @@ def handle_udp_client(client_address, file_size):
 
                 udp_socket.sendto(message, client_address)
                 sequence_number += 1
-                time.sleep(0.001)  # Add delay to prevent congestion
+                time.sleep(0.001)  # Prevent congestion
 
         log(f"UDP transfer to {client_address} completed.", Fore.GREEN)
     except Exception as e:
@@ -69,7 +69,7 @@ def handle_udp_client(client_address, file_size):
 
 def start_udp_server():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_server:
-        udp_server.bind(('', UDP_SERVER_PORT))
+        udp_server.settimeout(1)  # Prevent infinite blocking
         udp_server.settimeout(1)
         log(f"UDP server listening on port {UDP_SERVER_PORT}", Fore.CYAN)
 
